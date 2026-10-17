@@ -25,7 +25,7 @@ except ImportError:
     DB_CONFIG = {"dbname": "your_db", "user": "your_user", "password": "your_pass", "host": "localhost"}
     _USE_POOL = False
 
-ADMIN_ID = 8987937105
+ADMIN_ID = 8662263918
 LOG_CHANNEL_ID = -1004420032759
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

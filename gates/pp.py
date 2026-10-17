@@ -1,0 +1,376 @@
+import asyncio
+import html
+import re
+import logging
+import aiohttp
+import time
+import psycopg2.extras
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# AIogram Imports
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+from aiogram import types, F, Router
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# LOCAL IMPORTS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+from database import is_gate_enabled, get_db_connection
+from bin import get_bin_info
+from sub import get_premium_status
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# CONFIGURATION & URLS & EMOJI IDs
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# REPLACE THIS WITH THE ACTUAL BASE URL OF YOUR API
+BASE_API_URL = "https://rocky1usd.cxchk.site" 
+
+# The Proxy string provided in the request
+PROXY_STRING = "http://user-FG9IqFSVPYNRnxxV-type-residential-session-c3ngj9de-country-US-city-Albuquerque-rotation-5:RCMd2xUcgo5Swkxo@geo.g-w.info:10080"
+
+# Constructing the full URL format
+# Note: {{cc}} is escaped to be treated as a literal {cc} for the .format() method later
+PP_API_URL = f"{BASE_API_URL}/gate=pp1/cc={{cc}}?proxy={PROXY_STRING}"
+
+# UPDATED: Correct Custom Emoji IDs from your working code
+CUSTOM_CHARGED_EMOJI_ID = "5343636681473935403"
+CUSTOM_APPROVED_EMOJI_ID = "5039844895779455925"
+CUSTOM_DECLINED_EMOJI_ID = "4915853119839011973"
+
+# In-memory dictionary for rate limiting
+user_last_command_time = {}
+
+# Router for this module
+def to_math_bold(s: str) -> str:
+    bold_map = {
+        'a':'𝗮','b':'𝗯','c':'𝗰','d':'𝗱','e':'𝗲','f':'𝗳','g':'𝗴','h':'𝗵','i':'𝗶','j':'𝗷','k':'𝗸','l':'𝗹','m':'𝗺','n':'𝗻','o':'𝗼','p':'𝗽','q':'𝗾','r':'𝗿','s':'𝘀','t':'𝘁','u':'𝘂','v':'𝘃','w':'𝘄','x':'𝘅','y':'𝘆','z':'𝘇',
+        'A':'𝗔','B':'𝗕','C':'𝗖','D':'𝗗','E':'𝗘','F':'𝗙','G':'𝗚','H':'𝗛','I':'𝗜','J':'𝗝','K':'𝗞','L':'𝗟','M':'𝗠','N':'𝗡','O':'𝗢','P':'𝗣','Q':'𝗤','R':'𝗥','S':'𝗦','T':'𝗧','U':'𝗨','V':'𝗩','W':'𝗪','X':'𝗫','Y':'𝗬','Z':'𝗭',
+        '0':'𝟬','1':'𝟭','2':'𝟮','3':'𝟯','4':'𝟰','5':'𝟱','6':'𝟲','7':'𝟳','8':'𝟴','9':'𝟵'
+    }
+    return "".join(bold_map.get(c, c) for c in str(s))
+
+router = Router()
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# DATABASE INITIALIZATION
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def ensure_stats_columns():
+    """Ensures cc_checked and cc_charged columns exist in users table."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS cc_checked INTEGER DEFAULT 0")
+        except Exception:
+            pass 
+        try:
+            cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS cc_charged INTEGER DEFAULT 0")
+        except Exception:
+            pass
+        conn.commit()
+        conn.close()
+        print("[DB] PP Stats columns checked/created.")
+    except Exception as e:
+        print(f"[DB] Error checking stats columns: {e}")
+
+# Run check on import
+ensure_stats_columns()
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# HELPERS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+async def update_user_stats(user_id, is_charged):
+    """
+    Increments cc_checked and optionally cc_charged in database.
+    Wrapped in asyncio.to_thread for non-blocking execution.
+    """
+    def _sync_update():
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET cc_checked = cc_checked + 1 WHERE user_id = %s", (user_id,))
+        if is_charged:
+            cursor.execute("UPDATE users SET cc_charged = cc_charged + 1 WHERE user_id = %s", (user_id,))
+        conn.commit()
+        conn.close()
+
+    await asyncio.to_thread(_sync_update)
+
+async def get_user_plan_name(user_id):
+    """Fetches specific plan name from receipts if premium, else Trial."""
+    is_premium, _ = get_premium_status(user_id)
+    if is_premium:
+        try:
+            def _sync_fetch():
+                conn = get_db_connection()
+                cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+                cursor.execute("SELECT plan FROM receipts WHERE user_id = %s ORDER BY purchased_on DESC LIMIT 1", (user_id,))
+                row = cursor.fetchone()
+                conn.close()
+                if row:
+                    p = row['plan'].lower()
+                    if "laveyan" in p: return '𝑫𝒐𝒓𝒆𝒂𝒎𝒐𝒏<tg-emoji emoji-id="5039727497143387500">👑</tg-emoji>'
+                    if "laveyan" in p: return "𝑫𝒐𝒓𝒆𝒂𝒎𝒐𝒏<tg-emoji emoji-id='5039727497143387500'>👑</tg-emoji>"
+                    if "root" in p: return '𝗥𝗼𝗼𝘁 <tg-emoji emoji-id="5039727497143387500">👑</tg-emoji>'
+                    if "elite" in p: return '𝗘𝗹𝗶𝘁𝗲 ⭐'
+                    if "core" in p: return '𝗖𝗼𝗿𝗲 <tg-emoji emoji-id="5042274086332400375">🛠️</tg-emoji>'
+                    return row['plan']
+                return "PREMIUM"
+            return await asyncio.to_thread(_sync_fetch)
+        except Exception as e:
+            logging.error(f"Error fetching plan name: {e}")
+        return "PREMIUM"
+    else:
+        return "TRIAL"
+
+def luhn_check(card_number: str) -> bool:
+    """
+    Validates a credit card number using Luhn Algorithm.
+    Returns True if valid, False otherwise.
+    """
+    # Remove any non-digit characters just in case
+    card_number = str(card_number).strip()
+    if not card_number.isdigit():
+        return False
+    
+    total = 0
+    reverse_digits = card_number[::-1]
+    
+    for i, char in enumerate(reverse_digits):
+        digit = int(char)
+        
+        # Double every second digit (starting from right, which is index 0, so we double odd indices)
+        if i % 2 == 1:
+            digit *= 2
+            if digit > 9:
+                digit -= 9
+                
+        total += digit
+        
+    return total % 10 == 0
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# COMMAND HANDLER
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@router.message(F.text.startswith("/pp"))
+async def pp_command(message: types.Message):
+    # 1. GATE CHECK
+    if not await asyncio.to_thread(is_gate_enabled, "pp"):
+        await message.reply(
+            "<tg-emoji emoji-id='4958926882994127612'>🚧</tg-emoji> <b>𝗽𝗮𝘆𝗽𝗮𝗹 𝟬.𝟭𝟬 𝗚𝗮𝘁𝗲 𝗶𝘀 𝘂𝗻𝗱𝗲𝗿 𝗺𝗮𝗶𝗻𝘁𝗲𝗻𝗮𝗻𝗰𝗲.</b>\n"
+            "𝗜𝘁 𝘄𝗶𝗹𝗹 𝗯𝗲 𝗯𝗮𝗰𝗸 𝘀𝗵𝗼𝗿𝘁𝗹𝘆 𝘄𝗶𝘁𝗵 𝗲𝘅𝗰𝗶𝘁𝗶𝗻𝗴 𝗶𝗺𝗽𝗿𝗼𝘃𝗲𝗺𝗲𝗻𝘁𝘀.<tg-emoji emoji-id='5341715473882955310'>⚙️</tg-emoji>",
+            parse_mode="HTML"
+        )
+        return
+
+    user = message.from_user
+    user_id = user.id
+    current_time = time.time()
+
+    # 2. GET PREMIUM STATUS
+    is_premium, _ = await asyncio.to_thread(get_premium_status, user_id)
+
+    # 3. RATE LIMITING CHECK
+    if not is_premium:
+        # Apply 10s cooldown only to FREE users
+        if user_id in user_last_command_time:
+            elapsed = current_time - user_last_command_time[user_id]
+            if elapsed < 10:
+                remaining_time = round(10 - elapsed, 1)
+                await message.reply(
+                    f"<tg-emoji emoji-id='6237864166879663987'>❌</tg-emoji> <b>𝗦𝗹𝗼𝘄 𝗗𝗼𝘄𝗻!</b>\n"
+                    f"𝗣𝗹𝗲𝗮𝘀𝗲 𝘄𝗮𝗶𝘁 <code>{remaining_time}</code> 𝘀𝗲𝗰𝗼𝗻𝗱𝘀 𝗯𝗲𝗳𝗼𝗿𝗲 𝗰𝗼𝗻𝘁𝗶𝗻𝘂𝗶𝗻𝗴.\n"
+                    f"<tg-emoji emoji-id='5042050649248760772'>💎</tg-emoji> 𝗨𝗻𝗹𝗼𝗰𝗸 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗳𝗼𝗿 𝗶𝗻𝘀𝘁𝗮𝗻𝘁, 𝘂𝗻𝗹𝗶𝗺𝗶𝘁𝗲𝗱 𝘂𝘀𝗲.",
+                    parse_mode="HTML"
+                )
+                return
+        
+        user_last_command_time[user_id] = current_time
+    
+    # 4. Extract Card Details
+    # Manual parsing since Aiogram doesn't provide context.args
+    parts = message.text.split(maxsplit=1)
+    raw_text = ""
+    
+    if len(parts) > 1:
+        raw_text = parts[1].strip()
+
+    if message.reply_to_message:
+        raw_text += " " + (message.reply_to_message.text or message.reply_to_message.caption or "")
+        
+    if not raw_text.strip():
+        await message.reply(
+            "<tg-emoji emoji-id='4915853119839011973'>⚠️</tg-emoji> <b>Usage:</b> /pp <code>cc|mm|yy|cvv</code>\n"
+            "Or reply to a message containing card details.",
+            parse_mode="HTML"
+        )
+        return
+
+    # Regex to find CC
+    pattern = r'\b(\d{15,16})[|\s/?\\:]+(\d{2,4})[|\s/?\\:]+(\d{2,4})[|\s/?\\:]+(\d{3,4})\b'
+    match = re.search(pattern, raw_text)
+
+    if not match:
+        await message.reply(
+            "<tg-emoji emoji-id='6237864166879663987'>❌</tg-emoji> <b>Invalid Card Format.</b>\n"
+            "Please provide CC as <code>4242424242424242|05|27|123</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    cc, mm, yy_raw, cvv = match.groups()
+
+    # Normalize Year: If 4 digits (e.g., 2027), take last 2 (27)
+    if len(yy_raw) == 4:
+        yy = yy_raw[2:]
+    else:
+        yy = yy_raw
+
+    formatted_cc = f"{cc}|{mm}|{yy}|{cvv}"
+
+    # 5. LUHN CHECK
+    if not luhn_check(cc):
+        await message.reply(
+            "<tg-emoji emoji-id='4915853119839011973'>⚠️</tg-emoji> <b>Invalid Card</b>\n"
+            "Your card number is incorrect.",
+            parse_mode="HTML"
+        )
+        return
+
+    # 7. Fetch Plan Name
+    plan_name = await get_user_plan_name(user_id)
+
+    # 8. Send Processing Message
+    user_link = f"<a href='tg://user?id={user_id}'>{user.first_name}</a>"
+    proc_msg = await message.reply(
+        f"𝗧𝗼𝘁𝗮𝗹 𝗖𝗮𝗿𝗱𝘀 ➛ <code>1</code>\n"
+        f"<tg-emoji emoji-id='5456140674028019486'>⚡</tg-emoji> 𝗧𝗶𝗺𝗲 ➛ <code>0.0s</code>\n"
+        f"<tg-emoji emoji-id='6237927637906364256'>👤</tg-emoji> 𝗨𝘀𝗲𝗿 ➛ {user_link}\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"<tg-emoji emoji-id='5039579582764680065'>⏳</tg-emoji> <b>𝗦𝘁𝗮𝗿𝘁𝗶𝗻𝗴 𝗖𝗵𝗲𝗰𝗸...</b>",
+        parse_mode="HTML"
+    )
+
+    # 9. Execute Background Task
+    # Pass is_premium status (though no longer used for credits, used for rate limit logic context if needed)
+    asyncio.create_task(
+        process_pp_check(
+            message, proc_msg, user, user_id, formatted_cc, cc, plan_name
+        )
+    )
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# BACKGROUND PROCESSOR
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+async def process_pp_check(message, proc_msg, user, user_id, formatted_cc, cc, plan_name):
+    import time
+    start_time = time.time()
+    """
+    Handles API calls, DB updates, and final message editing.
+    """
+    
+    # A. Auth API
+    api_result = {"code": "ERROR", "message": "Unknown Error", "status": "error"}
+    try:
+        async with aiohttp.ClientSession() as session:
+            # Using the PP_API_URL which includes the proxy string
+            async with session.get(PP_API_URL.format(cc=formatted_cc), timeout=60) as resp:
+                if resp.status == 200:
+                    api_result = await resp.json()
+                else:
+                    # If API returns non-200, try to read error text
+                    error_text = await resp.text()
+                    api_result["code"] = f"HTTP_{resp.status}"
+                    api_result["message"] = error_text[:50] if error_text else "API Error"
+    except Exception as e:
+        logging.error(f"Paypal API Error: {e}")
+        api_result["code"] = "TIMEOUT"
+        api_result["message"] = "Connection Timed Out"
+
+    # B. Bin Lookup
+    # get_bin_info is async, so we await it directly.
+    try:
+        bin_info = await get_bin_info(cc[:6])
+    except Exception:
+        bin_info = {}
+
+    bin_scheme = bin_info.get("scheme", "N/A")
+    card_type = bin_info.get("type", "N/A")
+    level = bin_info.get("level", "N/A")
+    bin_bank = bin_info.get("bank", "N/A")
+    country_name = bin_info.get("country", "N/A")
+    country_flag = bin_info.get("country_emoji", "")
+    bin_country = f"{country_flag} {country_name}" if country_flag else country_name
+
+    # C. Determine Final Status & Code
+    status_raw = api_result.get("status", "").lower()
+    res_code = api_result.get("code", "N/A")
+    
+    is_charged = False
+    
+    # UPDATED: Using Valid IDs and correct syntax (with fallbacks) from your working code
+    if status_raw == "charged":
+        final_status = f"𝗖𝗛𝗔𝗥𝗚𝗘𝗗 <tg-emoji emoji-id=\"{CUSTOM_CHARGED_EMOJI_ID}\">💎</tg-emoji>"
+        is_charged = True
+    elif status_raw == "approved":
+        final_status = f"𝗔𝗣𝗣𝗥𝗢𝗩𝗘𝗗 <tg-emoji emoji-id=\"{CUSTOM_APPROVED_EMOJI_ID}\">🍾</tg-emoji>"
+        is_charged = True
+    elif status_raw == "declined":
+        final_status = f"𝗗𝗘𝗖𝗟𝗜𝗡𝗘𝗗 <tg-emoji emoji-id=\"{CUSTOM_DECLINED_EMOJI_ID}\">⚠️</tg-emoji>"
+    else:
+        final_status = "𝗘𝗥𝗥𝗢𝗥 <tg-emoji emoji-id='5040030395416969985'>🚫</tg-emoji>"
+
+
+    # E. UPDATE STATS (Checked + Charged)
+    # Run this in executor to avoid blocking async loop
+    await update_user_stats(user_id, is_charged)
+
+    # F. Build Final Caption
+    user_link = f'<a href="tg://user?id={user.id}">{user.first_name}</a>'
+    dev_link = '<a href="https://t.me/rohitRich">𝑫𝒐𝒓𝒆𝒂𝒎𝒐𝒏</a>'
+    
+    # Show plan name next to user
+    user_display = f"{user_link} ({plan_name})"
+    
+    elapsed = round(time.time() - start_time, 1)
+    final_caption = (
+        f"<b><tg-emoji emoji-id='5386367538735104399'>🆕</tg-emoji> {final_status}!</b>\n\n"
+        f"<b><tg-emoji emoji-id='5039623284056917259'>💳</tg-emoji> 𝗖𝗖:</b> <code><b>{formatted_cc}</b></code>\n"
+        f"<b><tg-emoji emoji-id='5039895103947146186'>🌐</tg-emoji> 𝗚𝗮𝘁𝗲:</b> {to_math_bold("Paypal 0.10 USD")}\n"
+        f"<b><tg-emoji emoji-id='5040042498634810056'>💬</tg-emoji> 𝗥𝗲𝘀𝗽𝗼𝗻𝘀𝗲:</b> {to_math_bold(html.escape(str(res_code or 'N/A')))}\n\n"
+        f"<b><tg-emoji emoji-id='5042329873662609701'>🗑️</tg-emoji> 𝗕𝗜𝗡 𝗜𝗻𝗳𝗼:</b>\n"
+        f"<b><tg-emoji emoji-id='5039753786638205957'>🔹</tg-emoji> 𝗕𝗿𝗮𝗻𝗱:</b> {to_math_bold(html.escape(str(bin_scheme or 'N/A')))}\n"
+        f"<b><tg-emoji emoji-id='5042020176455795565'>🔸</tg-emoji> 𝗧𝘆𝗽𝗲:</b> {to_math_bold(html.escape(str(card_type or 'N/A')))}\n"
+        f"<b><tg-emoji emoji-id='5042097984083330584'>🔘</tg-emoji> 𝗟𝗲𝘃𝗲𝗹:</b> {to_math_bold(html.escape(str(level or 'N/A')))}\n"
+        f"<b><tg-emoji emoji-id='5343636681473935403'>🏛️</tg-emoji> 𝗕𝗮𝗻𝗸:</b> {to_math_bold(html.escape(str(bin_bank or 'N/A')))}\n"
+        f"<b><tg-emoji emoji-id='5042176294222037888'>🌍</tg-emoji> 𝗖𝗼𝘂𝗻𝘁𝗿𝘆:</b> {to_math_bold(html.escape(str(bin_country or 'N/A')))}\n"
+        f"━━━━━━━━━━━━━━━━\n\n"
+        f"<b><tg-emoji emoji-id='5039579582764680065'>⏳</tg-emoji> 𝗧𝗶𝗺𝗲 ➛</b> <code>{elapsed}s</code>\n"
+        f"<tg-emoji emoji-id='6237927637906364256'>👤</tg-emoji> <b>𝗨𝘀𝗲𝗿 ➛</b> {user_display}\n"
+        f"<tg-emoji emoji-id='5039653765439816618'>🐈‍⬛</tg-emoji> <b>𝗗𝗲𝘃 ➛</b> {dev_link}"
+    )
+
+    # G. Keyboard (Aiogram 3.x Syntax)
+    reply_markup = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="𝑫𝒐𝒓𝒆𝒂𝒎𝒐𝒏", url="http://t.me/hchkCxcMainBot", icon_custom_emoji_id="5042097984083330584", style="primary")]
+    ])
+
+    # H. Edit the Processing Message with Result
+    try:
+        await proc_msg.edit_text(
+            text=final_caption,
+            parse_mode="HTML",
+            reply_markup=reply_markup
+        )
+    except Exception as e:
+        logging.error(f"Error editing message: {e}")
+        # Fallback: If editing fails (rare), send a new message as a reply
+        await message.reply(
+            text=final_caption,
+            parse_mode="HTML",
+            reply_markup=reply_markup
+        )

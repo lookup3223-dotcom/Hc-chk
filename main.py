@@ -76,7 +76,7 @@ from mass_gates.sitechk import (
 
 import payments as pay_sys
 
-BOT_TOKEN = "8994355658:AAHFJkFILCabtUIDmkgAms2glXCk_Gt4iJw"
+BOT_TOKEN = "8808848620:AAHOtg4mKZmx5ukKhxB1iGp0mQLKXBPc9Ak"
 WEBHOOK_URL = f"https://cxchk.site/{BOT_TOKEN}"
 WEBHOST = "0.0.0.0"
 WEBPORT = 8080
@@ -209,7 +209,7 @@ _JOIN_KB = InlineKeyboardMarkup(inline_keyboard=[
     ]
 ])
 
-ADMIN_IDS = {8987937105}
+ADMIN_IDS = {8662263918}
 
 
 class MembershipMiddleware(BaseMiddleware):

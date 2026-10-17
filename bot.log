@@ -1,0 +1,30 @@
+[2026-08-24 19:41:25,764] [INFO] [DB] psycopg2 not found - using SQLite with mocked psycopg2
+[2026-08-24 19:41:25,765] [INFO] [DB] Connection pool initialized: min=1, max=3, db=/root/hchk.cxc/rohit.db
+[2026-08-24 19:41:25,765] [INFO] [DB] Starting schema initialization...
+[2026-08-24 19:41:25,765] [INFO] [DB] Users table initialized
+[2026-08-24 19:41:25,766] [INFO] [DB] Proxies table initialized
+[2026-08-24 19:41:25,766] [INFO] [DB] Receipts table initialized
+[2026-08-24 19:41:25,766] [INFO] [DB] Codes table initialized
+[2026-08-24 19:41:25,766] [INFO] [DB] Plan keys table initialized
+[2026-08-24 19:41:25,766] [INFO] [DB] Gate status table initialized
+[2026-08-24 19:41:25,766] [INFO] [DB] Banned users table initialized
+[2026-08-24 19:41:25,766] [INFO] [DB] Schema initialization completed successfully
+[2026-08-24 19:41:25,766] [INFO] [DB] Database module initialized successfully
+[2026-08-24 19:41:28,196] [INFO] [DB] [fb] setup_feedback_handler called (no-op — router pre-included).
+[2026-08-24 19:41:28,573] [INFO] [DB] Dummy web server started on port 8080 to keep Render alive
+[2026-08-24 19:41:28,573] [INFO] [DB] Bot starting via Long Polling…
+[2026-08-24 19:41:28,574] [INFO] [DB] Start polling
+[2026-08-24 19:41:28,699] [INFO] [DB] Run polling for bot @HchkCxcMainbot id=8994355658 - 'Hchk.Cxc.Main'
+[2026-08-24 19:41:47,583] [INFO] [DB] Update id=888334016 is handled. Duration 906 ms by bot id=8994355658
+[2026-08-24 19:41:54,717] [INFO] [DB] Update id=888334017 is handled. Duration 521 ms by bot id=8994355658
+[2026-08-24 19:42:34,199] [INFO] [DB] Update id=888334018 is handled. Duration 536 ms by bot id=8994355658
+[2026-08-24 19:42:56,358] [WARNING] [DB] Membership check failed for 6630750941: Telegram server says - Bad Request: chat not found
+[2026-08-24 19:42:56,362] [INFO] [DB] Created user 6630750941 (IncorrectBoyz)
+[2026-08-24 19:42:56,907] [INFO] [DB] Update id=888334019 is handled. Duration 817 ms by bot id=8994355658
+[2026-08-24 19:43:01,203] [WARNING] [DB] Membership check failed for 6630750941: Telegram server says - Bad Request: chat not found
+[2026-08-24 19:43:01,753] [INFO] [DB] Update id=888334020 is handled. Duration 792 ms by bot id=8994355658
+[2026-08-24 19:43:43,401] [INFO] [DB] Update id=888334021 is handled. Duration 2 ms by bot id=8994355658
+[2026-08-24 19:45:16,049] [WARNING] [DB] Membership check failed for 6630750941: Telegram server says - Bad Request: chat not found
+[2026-08-24 19:45:16,623] [INFO] [DB] Update id=888334022 is handled. Duration 1113 ms by bot id=8994355658
+[2026-08-24 19:45:31,397] [INFO] [DB] Update id=888334023 is handled. Duration 1 ms by bot id=8994355658
+[2026-08-24 19:45:34,224] [INFO] [DB] Update id=888334024 is handled. Duration 838 ms by bot id=8994355658

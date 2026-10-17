@@ -20,14 +20,14 @@ from database import get_db_connection
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 # ADD YOUR TELEGRAM ID HERE
-ADMIN_IDS = [8987937105] 
+ADMIN_IDS = [8662263918] 
 
 # Test card to verify site functionality
 TEST_CARD = "4000223372377978|05|29|651"
 
 # API Configuration - SAME AS msh.py
 API_URLS = [
-    "https://sss-9t3a.onrender.com/shopify"
+    "https://web-production-0919d.up.railway.app/shopify"
 ]
 API_TIMEOUT = 90
 

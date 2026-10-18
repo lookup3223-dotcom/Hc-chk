@@ -29,6 +29,81 @@ from aiogram.filters.callback_data import CallbackData
 from database import is_gate_enabled, update_user_stats, get_db_connection
 from bin import get_bin_info
 from sub import get_premium_status
+from proxy_pool import (
+    get_pool_proxies,
+    pool_add_proxies,
+    pool_remove_proxies,
+    pool_clear,
+    pool_report,
+    pool_stats,
+    normalize_proxy_line,
+    is_proxy_admin,
+    _is_proxy_admin_async,
+    _pool_admin_ok,
+    _pool_usage_text,
+    PROXY_POOL_BACKEND,
+    MAX_PROXIES_PER_SESSION,
+)from sub import get_premium_status
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# OWNER-ONLY ADMIN CHECK
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Set these in your .env:
+#   OWNER_IDS=123456789,987654321      (comma separated, overrides everything)
+#   PROXY_ADMIN_GROUP_ID=-1001234567890 (group where /proxyset + /proxypool work)
+# A user is admin if: env OWNER_IDS, then DB flag is_admin, then PROXY_ADMIN_OWNER.
+
+PROXY_ADMIN_OWNER = int(os.getenv("OWNER_ID", "0") or 0)
+PROXY_ADMIN_GROUP_ID = int(os.getenv("PROXY_ADMIN_GROUP_ID", "0") or 0)
+
+OWNER_IDS = set()
+for _oid in (os.getenv("OWNER_IDS", "") or "").split(","):
+    _oid = _oid.strip()
+    if _oid.lstrip("-").isdigit():
+        OWNER_IDS.add(int(_oid))
+if PROXY_ADMIN_OWNER:
+    OWNER_IDS.add(PROXY_ADMIN_OWNER)
+
+DB_ADMIN_CACHE = {}   # user_id -> (is_admin: bool, checked_at: float)
+_DB_ADMIN_TTL = 300   # re-check the DB flag every 5 minutes
+
+
+def _is_db_admin(user_id) -> bool:
+    """Optional DB flag. Returns False (never raises) if the column/table isn't there."""
+    now = time.time()
+    cached = DB_ADMIN_CACHE.get(user_id)
+    if cached and (now - cached[1]) < _DB_ADMIN_TTL:
+        return cached[0]
+    is_admin = False
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT is_admin FROM users WHERE user_id = %s", (user_id,))
+        row = cursor.fetchone()
+        conn.close()
+        if row and row[0]:
+            is_admin = bool(row[0])
+    except Exception:
+        is_admin = False
+    DB_ADMIN_CACHE[user_id] = (is_admin, now)
+    return is_admin
+
+
+def is_proxy_admin(user_id) -> bool:
+    """True only for the bot owner / admins — regular users are NEVER admin."""
+    if not user_id:
+        return False
+    if user_id in OWNER_IDS:
+        return True
+    if PROXY_ADMIN_OWNER and user_id == PROXY_ADMIN_OWNER:
+        return True
+    return _is_db_admin(user_id)
+
+
+async def _is_proxy_admin_async(user_id) -> bool:
+    if user_id in OWNER_IDS or (PROXY_ADMIN_OWNER and user_id == PROXY_ADMIN_OWNER):
+        return True
+    return await asyncio.to_thread(is_proxy_admin, user_id)
+
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # CONFIGURATION & URLS
@@ -126,6 +201,300 @@ class MshStopCallback(CallbackData, prefix="mshs"):
 # PROXY MANAGER CLASS
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# OWNER PROXY POOL (shared by ALL users)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Users never add proxies. The owner/admin sets them here and everyone uses them.
+# Auto-creates its table, so it works with zero schema changes.
+# Optional (only if you want pool proxies to persist across restarts):
+#   PROXY_POOL_BACKEND=db  and a table:
+#   CREATE TABLE IF NOT EXISTS proxy_pool (
+#       proxy TEXT PRIMARY KEY, added_by BIGINT,
+#       ok_count INT DEFAULT 0, fail_count INT DEFAULT 0,
+#       last_ok TIMESTAMPTZ, last_fail TIMESTAMPTZ, added_at TIMESTAMPTZ DEFAULT NOW()
+#   );
+
+PROXY_POOL_BACKEND = (os.getenv("PROXY_POOL_BACKEND", "file") or "file").strip().lower()
+PROXY_POOL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "proxy_pool.txt")
+PROXY_ADMIN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "proxy_admins.txt")
+MAX_PROXIES_PER_SESSION = int(os.getenv("MAX_PROXIES_PER_SESSION", "150") or 150)
+
+PROXY_POOL = {}          # proxy -> {'ok': int, 'fail': int, 'last_ok': ts|None, 'last_fail': ts|None, 'added_by': id|None, 'added_at': ts}
+_pool_lock = _threading.Lock()
+
+
+def _pool_row(proxy, added_by=None):
+    return {
+        'ok': 0,
+        'fail': 0,
+        'last_ok': None,
+        'last_fail': None,
+        'added_by': added_by,
+        'added_at': time.time(),
+    }
+
+
+def normalize_proxy_line(proxy: str) -> Optional[str]:
+    """Module-level proxy normalizer (same rules as ProxyManager._normalize_proxy)."""
+    if not proxy:
+        return None
+    proxy = proxy.strip()
+    if not proxy:
+        return None
+    if proxy.startswith(('http://', 'https://')):
+        return proxy
+    if proxy.startswith('socks5://'):
+        return 'http://' + proxy[9:]
+
+    if '@' in proxy and ':' in proxy.split('@')[0]:
+        return f'http://{proxy}'
+
+    parts = proxy.split()
+    if len(parts) == 4:
+        user, pwd, host, port = parts
+        return f'http://{user}:{pwd}@{host}:{port}'
+
+    if ':' in proxy and '@' not in proxy:
+        parts = proxy.split(':')
+        if len(parts) == 2 and parts[1].isdigit():
+            return f'http://{proxy}'
+
+    return f'http://{proxy}'
+
+
+def _pool_load_backend():
+    """Load the pool from DB when configured and available, else from the file."""
+    if PROXY_POOL_BACKEND == 'db':
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT proxy, ok_count, fail_count, last_ok, last_fail, added_by FROM proxy_pool"
+            )
+            rows = cursor.fetchall()
+            conn.close()
+            for row in rows:
+                proxy = row[0]
+                entry = _pool_row(proxy, row[5] if len(row) > 5 else None)
+                entry['ok'] = row[1] or 0
+                entry['fail'] = row[2] or 0
+                entry['last_ok'] = row[3].timestamp() if row[3] else None
+                entry['last_fail'] = row[4].timestamp() if row[4] else None
+                PROXY_POOL[proxy] = entry
+            logging.info(f"[ProxyPool] Loaded {len(PROXY_POOL)} proxies from database")
+            return
+        except Exception as e:
+            logging.warning(f"[ProxyPool] DB load failed ({e}) — falling back to file")
+
+    try:
+        if os.path.exists(PROXY_POOL_FILE):
+            with open(PROXY_POOL_FILE, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    proxy = normalize_proxy_line(line)
+                    if proxy:
+                        PROXY_POOL.setdefault(proxy, _pool_row())
+            logging.info(f"[ProxyPool] Loaded {len(PROXY_POOL)} proxies from file")
+    except Exception as e:
+        logging.error(f"[ProxyPool] Error loading pool file: {e}")
+
+
+def _pool_save_backend():
+    if PROXY_POOL_BACKEND == 'db':
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM proxy_pool")
+            for proxy, e in PROXY_POOL.items():
+                cursor.execute(
+                    "INSERT INTO proxy_pool (proxy, ok_count, fail_count, last_ok, last_fail, added_by) "
+                    "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (proxy) DO NOTHING",
+                    (proxy, e['ok'], e['fail'],
+                     datetime.fromtimestamp(e['last_ok']) if e.get('last_ok') else None,
+                     datetime.fromtimestamp(e['last_fail']) if e.get('last_fail') else None,
+                     e.get('added_by'))
+                )
+            conn.commit()
+            conn.close()
+            return
+        except Exception as e:
+            logging.warning(f"[ProxyPool] DB save failed ({e}) — falling back to file")
+
+    try:
+        with open(PROXY_POOL_FILE, "w", encoding="utf-8") as f:
+            for proxy in PROXY_POOL:
+                f.write(proxy + "\n")
+    except Exception as e:
+        logging.error(f"[ProxyPool] Error saving pool file: {e}")
+
+
+def pool_add_proxies(text: str, added_by=None) -> Tuple[int, int]:
+    """Add proxies to the shared pool. Returns (added, skipped)."""
+    added = 0
+    skipped = 0
+    with _pool_lock:
+        for raw_line in (text or "").splitlines():
+            proxy = normalize_proxy_line(raw_line)
+            if not proxy:
+                continue
+            if proxy in PROXY_POOL:
+                skipped += 1
+                continue
+            PROXY_POOL[proxy] = _pool_row(proxy, added_by)
+            added += 1
+        if added:
+            _pool_save_backend()
+    return added, skipped
+
+
+def pool_remove_proxies(text: str) -> int:
+    """Remove proxies from the shared pool. Returns how many were removed."""
+    removed = 0
+    with _pool_lock:
+        for raw_line in (text or "").splitlines():
+            proxy = normalize_proxy_line(raw_line)
+            if proxy and proxy in PROXY_POOL:
+                del PROXY_POOL[proxy]
+                removed += 1
+        if removed:
+            _pool_save_backend()
+    return removed
+
+
+def pool_clear() -> int:
+    with _pool_lock:
+        count = len(PROXY_POOL)
+        PROXY_POOL.clear()
+        _pool_save_backend()
+    return count
+
+
+def pool_report(proxy: str, is_ok: bool):
+    """Update a pool proxy's health. Called from ProxyManager on every result."""
+    if not proxy:
+        return
+    with _pool_lock:
+        entry = PROXY_POOL.get(proxy)
+        if entry is None:
+            return
+        now = time.time()
+        if is_ok:
+            entry['ok'] += 1
+            entry['last_ok'] = now
+        else:
+            entry['fail'] += 1
+            entry['last_fail'] = now
+
+
+def _pool_health_score(entry) -> float:
+    ok = entry.get('ok', 0)
+    fail = entry.get('fail', 0)
+    total = ok + fail
+    if total == 0:
+        return 0.5
+    return (ok + 1) / (total + 2)   # Laplace-smoothed success rate
+
+
+def get_pool_proxies(limit: int = None) -> List[str]:
+    """
+    Best proxies from the shared pool, healthiest first.
+    Proxies that failed recently are pushed down, unless the pool is tiny.
+    """
+    with _pool_lock:
+        items = list(PROXY_POOL.items())
+
+    if not items:
+        return []
+
+    now = time.time()
+
+    def sort_key(item):
+        proxy, entry = item
+        score = _pool_health_score(entry)
+        last_fail = entry.get('last_fail') or 0
+        if last_fail and (now - last_fail) < 120:
+            score -= 0.75                      # just-failed = strongly deprioritised
+        return score
+
+    items.sort(key=sort_key, reverse=True)
+    cap = limit or MAX_PROXIES_PER_SESSION
+    cap = max(1, min(cap, len(items)))
+    return [proxy for proxy, _ in items[:cap]]
+
+
+def pool_stats() -> dict:
+    with _pool_lock:
+        items = list(PROXY_POOL.items())
+    total = len(items)
+    working = sum(1 for _, e in items if e.get('ok', 0) > 0)
+    healthy = sum(1 for _, e in items
+                  if _pool_health_score(e) >= 0.5 and e.get('ok', 0) > 0)
+    return {
+        'total': total,
+        'working': working,
+        'healthy': healthy,
+        'backend': PROXY_POOL_BACKEND,
+    }
+
+
+def _load_proxy_admins():
+    """Extra admins from proxy_admins.txt (one user id per line)."""
+    admins = set()
+    try:
+        if os.path.exists(PROXY_ADMIN_FILE):
+            with open(PROXY_ADMIN_FILE, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.lstrip("-").isdigit():
+                        admins.add(int(line))
+    except Exception as e:
+        logging.error(f"[ProxyAdmin] Error reading proxy_admins.txt: {e}")
+    return admins
+
+
+def _save_proxy_admin(user_id):
+    try:
+        with open(PROXY_ADMIN_FILE, "a", encoding="utf-8") as f:
+            f.write(f"{user_id}\n")
+    except Exception as e:
+        logging.error(f"[ProxyAdmin] Error writing proxy_admins.txt: {e}")
+
+
+def _pool_admin_ok(message: types.Message, user_id) -> bool:
+    """
+    Admin gate. Works in the owner DM, in PROXY_ADMIN_GROUP_ID,
+    and inside a group topic (via message_thread_id).
+    """
+    if not is_proxy_admin(user_id):
+        return False
+
+    chat = message.chat
+    if chat.type == "private":
+        return True
+    if PROXY_ADMIN_GROUP_ID and chat.id == PROXY_ADMIN_GROUP_ID:
+        return True
+    # message_thread_id is only set when the command is inside a topic
+    if getattr(message, "message_thread_id", None) is not None:
+        return True
+    return False
+
+
+def _pool_usage_text() -> str:
+    st = pool_stats()
+    return (
+        "<b><tg-emoji emoji-id='5399913388845322366'>📡</tg-emoji> 𝗣𝗿𝗼𝘅𝘆 𝗣𝗼𝗼𝗹 — 𝗔𝗱𝗺𝗶𝗻</b>\n\n"
+        f"<b>Pool ➛</b> <code>{st['total']}</code> proxies "
+        f"(<code>{st['working']}</code> working)\n\n"
+        "<b>Commands</b>\n"
+        "• <code>/proxyset &lt;proxies&gt;</code> — add proxies (one per line,\n"
+        "  space or newline separated)\n"
+        "• <code>/proxyset</code> (reply to a .txt) — bulk add from file\n"
+        "• <code>/proxydel &lt;proxies&gt;</code> — remove specific proxies\n"
+        "• <code>/proxypool</code> — show pool status\n"
+        "• <code>/proxyclear</code> — wipe the whole pool\n"
+        "• <code>/proxyadmin &lt;user_id&gt;</code> — give another admin access\n\n"
+        "<i>Users never touch proxies — everyone uses this pool automatically.</i>"
+    )
 class ProxyManager:
     """
     Proxy Manager - Only fails on REAL proxy errors.
@@ -161,7 +530,26 @@ class ProxyManager:
         'proxy error', 'bad gateway', 'empty psk', 'pasted_fields'
     ]
 
-    def __init__(self, proxies_list: List[str], session_id: str):
+    def __init__(self, proxies_list: List[str], session_id: str, source: str = "user"):
+        self.session_id = session_id
+        self.source = source                      # "pool" | "user"
+        self.raw_proxies = list(set(proxies_list))
+
+        self.all_proxies = [self._normalize_proxy(p) for p in self.raw_proxies]
+        self.all_proxies = [p for p in self.all_proxies if p]
+
+        self.proxy_queue = deque(self.all_proxies)
+        self.failed_proxies = {}
+        self.success_counts = {proxy: 0 for proxy in self.all_proxies}
+        self.total_uses = 0
+        self.cooldown_seconds = 60
+
+        logging.info(
+            f"[ProxyManager] Initialized with {len(self.all_proxies)} normalized proxies "
+            f"(source={source}) for session {session_id}"
+        )
+        if not self.all_proxies:
+            logging.error(f"[ProxyManager] ZERO usable proxies for session {session_id} — check the pool")    def __init__(self, proxies_list: List[str], session_id: str):
         self.session_id = session_id
         self.raw_proxies = list(set(proxies_list))
 
@@ -177,6 +565,8 @@ class ProxyManager:
         logging.info(f"[ProxyManager] Initialized with {len(self.all_proxies)} normalized proxies for session {session_id}")
 
     def _normalize_proxy(self, proxy: str) -> Optional[str]:
+        # Single source of truth — proxy_pool.normalize_proxy_line
+        return normalize_proxy_line(proxy)    def _normalize_proxy(self, proxy: str) -> Optional[str]:
         if not proxy or not proxy.strip():
             return None
 
@@ -302,6 +692,21 @@ class ProxyManager:
             cooldown_duration = cooldown_multipliers[multiplier_index]
 
             fail_data['cooldown_until'] = current_time + cooldown_duration
+
+            # Feed the shared pool so bad proxies sink for EVERYONE, next session included
+            pool_report(proxy, False)
+
+            logging.warning(
+                f"[ProxyManager] Proxy FAILED (real error): {mask_proxy(proxy)} "
+                f"(#{fail_count}) Cooldown: {cooldown_duration}s | Response: {api_response[:80]}"
+            )
+        else:
+            self.report_success(proxy)
+            pool_report(proxy, True)
+            logging.debug(
+                f"[ProxyManager] Proxy OK: {mask_proxy(proxy)} | "
+                f"Response: {api_response[:60]}"
+            )            fail_data['cooldown_until'] = current_time + cooldown_duration
 
             logging.warning(
                 f"[ProxyManager] Proxy FAILED (real error): {mask_proxy(proxy)} "
@@ -564,6 +969,66 @@ async def get_user_plan_name(user_id):
         return "TRIAL"
 
 async def get_user_proxies(user_id):
+    """
+    Proxies for a session.
+
+    The shared owner pool is the primary source — users never add proxies.
+    A user's OWN rows in the `proxies` table (legacy /proxies) are still honoured
+    and get priority, in case some users already have working lists saved.
+    """
+    return await get_session_proxies(user_id)
+
+
+async def get_user_pool_proxies(user_id):
+    """Legacy per-user proxies from the \`proxies\` table (optional, never required)."""
+    proxies = []
+    try:
+        def _sync_fetch():
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT proxy FROM proxies WHERE user_id = %s", (user_id,))
+            rows = cursor.fetchall()
+            conn.close()
+            return [row[0] for row in rows]
+        proxies = await asyncio.to_thread(_sync_fetch)
+    except Exception as e:
+        logging.error(f"Error fetching proxies for user {user_id}: {e}")
+    return proxies
+
+
+async def get_session_proxies(user_id) -> List[str]:
+    """
+    Build the proxy list for one session:
+      user's own valid proxies first (if any), then the shared owner pool.
+    Returns [] only when BOTH are unusable.
+    """
+    own = await get_user_pool_proxies(user_id)
+    own_clean = []
+    for p in own:
+        n = normalize_proxy_line(p)
+        if n:
+            own_clean.append(n)
+
+    pool_proxies = await asyncio.to_thread(get_pool_proxies, MAX_PROXIES_PER_SESSION)
+
+    combined = []
+    seen = set()
+    for p in (own_clean + pool_proxies):
+        if p not in seen:
+            seen.add(p)
+            combined.append(p)
+
+    if combined:
+        logging.info(
+            f"[MSH] Proxy list for {user_id}: {len(own_clean)} own + "
+            f"{len(pool_proxies)} pool = {len(combined)} usable"
+        )
+    else:
+        logging.error(f"[MSH] No usable proxies for user {user_id} — pool is empty")
+    return combined
+
+
+async def _get_user_proxies_legacy(user_id):async def get_user_proxies(user_id):
     proxies = []
     try:
         def _sync_fetch():
@@ -1706,6 +2171,206 @@ async def handle_stop_callback(callback: types.CallbackQuery, callback_data: Msh
 # MAIN COMMAND
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# OWNER/ADMIN PROXY POOL COMMANDS  (users never touch proxies)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Works in: the owner's DM, PROXY_ADMIN_GROUP_ID, or any group TOPIC.
+# The check is resolved at runtime (is_proxy_admin), so it cannot be bypassed
+# by importing the module directly. A non-admin sees ONLY "no such command".
+
+def _admin_cmd_trigger(*names):
+    def _check(message: types.Message) -> bool:
+        text = (message.text or message.caption or "")
+        return any(text.strip().lower().startswith(n) for n in names)
+    return _check
+
+async def _guard_admin(message: types.Message) -> Optional[int]:
+    """Returns the admin's user_id, or None (and already answered) for non-admins."""
+    user_id = message.from_user.id if message.from_user else None
+    if not user_id or not await _is_proxy_admin_async(user_id):
+        # Indistinguishable from a command that does not exist
+        await message.reply(
+            "<tg-emoji emoji-id='6234166879663987'>❓</tg-emoji> <b>Unknown command.</b> "
+            "Try /help.",
+            parse_mode="HTML"
+        )
+        return None
+    if not _pool_admin_ok(message, user_id):
+        await message.reply(
+            "<tg-emoji emoji-id='4915853119839011973'>⚠️</tg-emoji> "
+            "Pool commands only work in the admin group or my DM.",
+            parse_mode="HTML"
+        )
+        return None
+    return user_id
+
+
+async def _read_proxy_text(message: types.Message, bot: Bot) -> str:
+    """Proxies from the command text, a replied-to message, or an attached .txt."""
+    text = ""
+
+    cmd_text = message.text or message.caption or ""
+    parts = cmd_text.split(maxsplit=1)
+    if len(parts) > 1:
+        text += parts[1] + "\n"
+
+    if message.reply_to_message:
+        replied = message.reply_to_message
+        if replied.text:
+            text += replied.text + "\n"
+        elif replied.caption:
+            text += replied.caption + "\n"
+
+    document = message.document
+    if not document and message.reply_to_message:
+        document = message.reply_to_message.document
+
+    if document:
+        if document.file_size and document.file_size > 2 * 1024 * 1024:
+            await message.reply("<tg-emoji emoji-id='6234166879663987'>❌</tg-emoji> File too large. Max 2MB.")
+            return ""
+        try:
+            file_info = await bot.get_file(document.file_id)
+            byte_content = await bot.download_file(file_info.file_path)
+            if byte_content:
+                data = byte_content.read() if hasattr(byte_content, 'read') else byte_content
+                text += data.decode('utf-8', errors='ignore')
+        except Exception as e:
+            await message.reply(f"<tg-emoji emoji-id='6234166879663987'>❌</tg-emoji> Could not read file: {e}")
+            return ""
+
+    return text
+
+
+@router.message(_admin_cmd_trigger("/proxyset"))
+async def proxyset_command(message: types.Message):
+    user_id = await _guard_admin(message)
+    if not user_id:
+        return
+
+    text = await _read_proxy_text(message, message.bot)
+    if not text.strip():
+        await message.reply(
+            "<tg-emoji emoji-id='6234166879663987'>❌</tg-emoji> <b>No proxies given.</b>\n\n"
+            "Send them like this:\n"
+            "<code>/proxyset user:pass@host:port</code>\n"
+            "<code>/proxyset host:port:user:pass</code>\n"
+            "or reply to a .txt file with <code>/proxyset</code>.",
+            parse_mode="HTML"
+        )
+        return
+
+    added, skipped = await asyncio.to_thread(pool_add_proxies, text, user_id)
+    st = pool_stats()
+
+    await message.reply(
+        f"<tg-emoji emoji-id='5341715473882955310'>✅</tg-emoji> <b>𝗣𝗼𝗼𝗹 𝗨𝗽𝗱𝗮𝘁𝗲𝗱</b>\n\n"
+        f"<b>Added ➛</b> <code>{added}</code>\n"
+        f"<b>Already in pool ➛</b> <code>{skipped}</code>\n"
+        f"<b>Pool size ➛</b> <code>{st['total']}</code>",
+        parse_mode="HTML"
+    )
+    print(f"📡 [ProxyPool] +{added} proxies by admin {user_id} (pool={st['total']})")
+    logging.info(f"[ProxyPool] +{added} added, {skipped} dup by {user_id} (total={st['total']})")
+
+
+@router.message(_admin_cmd_trigger("/proxydel", "/proxyremove"))
+async def proxydel_command(message: types.Message):
+    user_id = await _guard_admin(message)
+    if not user_id:
+        return
+
+    text = await _read_proxy_text(message, message.bot)
+    if not text.strip():
+        await message.reply(
+            "<tg-emoji emoji-id='6234166879663987'>❌</tg-emoji> "
+            "Usage: <code>/proxydel user:pass@host:port</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    removed = await asyncio.to_thread(pool_remove_proxies, text)
+    st = pool_stats()
+
+    await message.reply(
+        f"<tg-emoji emoji-id='5456140674028019486'>🛑</tg-emoji> <b>𝗣𝗿𝗼𝘅𝗶𝗲𝘀 𝗥𝗲𝗺𝗼𝘃𝗲𝗱</b>\n\n"
+        f"<b>Removed ➛</b> <code>{removed}</code>\n"
+        f"<b>Pool size ➛</b> <code>{st['total']}</code>",
+        parse_mode="HTML"
+    )
+    logging.info(f"[ProxyPool] -{removed} by {user_id} (total={st['total']})")
+
+
+@router.message(_admin_cmd_trigger("/proxypool"))
+async def proxypool_command(message: types.Message):
+    user_id = await _guard_admin(message)
+    if not user_id:
+        return
+
+    st = pool_stats()
+    lines_text = [
+        f"<b><tg-emoji emoji-id='5399913388845322366'>📡</tg-emoji> 𝗣𝗿𝗼𝘅𝘆 𝗣𝗼𝗼𝗹</b>\n",
+        f"<b>Total ➛</b> <code>{st['total']}</code>",
+        f"<b>Working ➛</b> <code>{st['working']}</code>",
+        f"<b>Storage ➛</b> <code>{st['backend']}</code>\n",
+    ]
+    if st['total'] == 0:
+        lines_text.append("<i>Pool is empty — add proxies with <code>/proxyset</code>.</i>")
+    else:
+        lines_text.append("<b>Top 10 (healthiest first)</b>")
+        for proxy in (await asyncio.to_thread(get_pool_proxies, 10)):
+            lines_text.append(f"• <code>{html_escape(mask_proxy(proxy))}</code>")
+
+    await message.reply("\n".join(lines_text), parse_mode="HTML")
+
+
+@router.message(_admin_cmd_trigger("/proxyclear"))
+async def proxyclear_command(message: types.Message):
+    user_id = await _guard_admin(message)
+    if not user_id:
+        return
+
+    removed = await asyncio.to_thread(pool_clear)
+    await message.reply(
+        f"<tg-emoji emoji-id='5456140674028019486'>🛑</tg-emoji> "
+        f"<b>𝗣𝗼𝗼𝗹 𝗖𝗹𝗲𝗮𝗿𝗲𝗱</b> — <code>{removed}</code> proxies removed.",
+        parse_mode="HTML"
+    )
+    logging.warning(f"[ProxyPool] Cleared {removed} proxies by {user_id}")
+
+
+@router.message(_admin_cmd_trigger("/proxyadmin"))
+async def proxyadmin_command(message: types.Message):
+    user_id = await _guard_admin(message)
+    if not user_id:
+        return
+
+    parts = (message.text or "").split()
+    if len(parts) < 2 or not parts[1].lstrip("-").isdigit():
+        await message.reply(
+            "<tg-emoji emoji-id='6234166879663987'>❌</tg-emoji> "
+            "Usage: <code>/proxyadmin &lt;user_id&gt;</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    new_admin = int(parts[1])
+    await asyncio.to_thread(_save_proxy_admin, new_admin)
+    await message.reply(
+        f"<tg-emoji emoji-id='5341715473882955310'>✅</tg-emoji> "
+        f"<code>{new_admin}</code> can now manage the pool.",
+        parse_mode="HTML"
+    )
+    logging.info(f"[ProxyAdmin] {user_id} granted pool admin to {new_admin}")
+
+
+@router.message(_admin_cmd_trigger("/poolhelp"))
+async def poolhelp_command(message: types.Message):
+    user_id = await _guard_admin(message)
+    if not user_id:
+        return
+    await message.reply(_pool_usage_text(), parse_mode="HTML")
+
 @router.message(lambda message: (message.text and message.text.startswith("/msh")) or (message.caption and message.caption.startswith("/msh")))
 async def msh_command(message: types.Message):
     if not await asyncio.to_thread(is_gate_enabled, "msh"):
@@ -1740,7 +2405,18 @@ async def msh_command(message: types.Message):
         )
         return
 
-    user_proxies = await get_user_proxies(user_id)
+    # ── Proxies: the shared owner pool is the default source ──
+    user_proxies = await get_session_proxies(user_id)
+    if not user_proxies:
+        st = pool_stats()
+        logging.warning(f"[MSH] No usable proxies (pool total={st['total']}) for user {user_id}")
+        await message.reply(
+            "<tg-emoji emoji-id='4915853119839011973'>⚠️</tg-emoji> <b>𝗡𝗼 𝗣𝗿𝗼𝘅𝗶𝗲𝘀 𝗔𝘃𝗮𝗶𝗹𝗮𝗯𝗹𝗲!</b>\n\n"
+            "The proxy pool is empty right now.\n"
+            "Please try again in a few minutes, or contact an admin.",
+            parse_mode="HTML"
+        )
+        return    user_proxies = await get_user_proxies(user_id)
     if not user_proxies:
         await message.reply(
             "<tg-emoji emoji-id='4915853119839011973'>⚠️</tg-emoji> <b>𝗡𝗼 𝗣𝗿𝗼𝘅𝗶𝗲𝘀!</b>\n\n"
@@ -1865,7 +2541,10 @@ async def process_mass_check_background(message: types.Message, bot: Bot, valid_
     session_id = "".join(random.choices(string.ascii_uppercase + string.digits, k=8))
     plan_name = await get_user_plan_name(user_id)
 
-    proxy_manager = ProxyManager(user_proxies, session_id)
+    proxy_manager = ProxyManager(user_proxies, session_id, source="pool")
+    proxy_stats = proxy_manager.get_stats()
+
+    logging.info(f"🔄 [MSH] Session {session_id} initialized with ProxyManager: {proxy_stats['total_proxies']} proxies (normalized)")    proxy_manager = ProxyManager(user_proxies, session_id)
     proxy_stats = proxy_manager.get_stats()
 
     logging.info(f"🔄 [MSH] Session {session_id} initialized with ProxyManager: {proxy_stats['total_proxies']} proxies (normalized)")

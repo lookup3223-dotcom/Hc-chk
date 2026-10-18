@@ -91,7 +91,7 @@ _start_msh_gc()
 router = Router()
 
 API_URLS = [
-    "https://web-production-0919d.up.railway.app/shopify"
+    "https://razor-api-production.up.railway.app/shopify"
 ]
 
 # ── PERMANENT FAKE SITE BLACKLIST ──────────────────────────────────────────────

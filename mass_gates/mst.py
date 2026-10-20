@@ -27,7 +27,7 @@ from aiogram.filters.callback_data import CallbackData
 from database import is_gate_enabled, update_user_stats, get_db_connection
 from bin import get_bin_info
 from sub import get_premium_status
-API_BASE_URL = "https://stripe-production-d91f.up.railway.app/stripe"
+API_BASE_URL = "https://afuonaz-stripe-5.up.railway.app/charge"
 
 # ── Shared HTTP session for MST API calls (avoids per-card session creation) ──
 _MST_HTTP_SESSION = None

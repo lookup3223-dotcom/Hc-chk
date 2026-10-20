@@ -214,7 +214,7 @@ async def call_site_check_api(site_url: str, cc_formatted: str, proxy: str) -> d
     Response Format:
     {
       "Gateway": "Shopify Payments",
-      "Price": "16.95",
+      "Price": "1.95",
       "Proxy": "Live",
       "Response": "GENERIC_ERROR",
       "Status": "false",
@@ -405,7 +405,7 @@ async def check_site_status(site_url: str) -> tuple:
                         actual_price = -1.0
             
             # 1. PRICE CONSTRAINT: Must be between $0 and $10.00
-            if not (0.00 <= actual_price <= 10.00):
+            if not (0.00 <= actual_price <= 4.00):
                 return site_url, "REMOVE", {"Price": actual_price}, f"Price ${actual_price:.2f} (> $10.00 Rejected) | {response_msg}"
 
             # 2. ADVANCED FAKE CHARGE DETECTION SYSTEM

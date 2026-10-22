@@ -26,7 +26,7 @@ except ImportError:
     _USE_POOL = False
 
 ADMIN_ID = 8662263918
-LOG_CHANNEL_ID = -1004420032759
+LOG_CHANNEL_ID = -1004365685437
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # DATABASE HELPERS (POSTGRESQL)

@@ -91,7 +91,7 @@ _start_msh_gc()
 router = Router()
 
 API_URLS = [
-    "https://razor-api-production.up.railway.app/shopify"
+    "https://legendshopify.onrender.com/"
 ]
 
 # ── PERMANENT FAKE SITE BLACKLIST ──────────────────────────────────────────────
@@ -1925,7 +1925,7 @@ async def run_mass_checker(bot: Bot, session_id, cards, user_obj, plan_name):
     session = MSH_SESSIONS.get(session_id)
     if not session: return
 
-    sem = asyncio.Semaphore(50)
+    sem = asyncio.Semaphore(30)
 
     async def worker(cc_formatted, cc_num):
         if is_session_stopped(session_id):

@@ -91,7 +91,7 @@ _start_msh_gc()
 router = Router()
 
 API_URLS = [
-    "http://181.214.136.123:9094/shopify"
+    "https://legendshopify.onrender.com/"
 ]
 
 # ── PERMANENT FAKE SITE BLACKLIST ──────────────────────────────────────────────

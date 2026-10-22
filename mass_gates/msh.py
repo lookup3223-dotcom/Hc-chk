@@ -44,8 +44,8 @@ BTN_LIVE_EMOJI_ID = "5039844895779455925"
 BTN_STOP_EMOJI_ID = "5040042498634810056"
 BTN_ALL_EMOJI_ID = "5447602197439218445"
 
-HIT_LOG_GROUP_ID = -1004450921715
-EXTRA_CHARGED_GROUP_ID = -1004482288275
+HIT_LOG_GROUP_ID = -1004365685437
+EXTRA_CHARGED_GROUP_ID = -1004450921715
 
 BUTTON_LOCK_SECONDS = 30
 
@@ -840,7 +840,7 @@ async def send_hit_log_to_group(bot: Bot, cc_formatted, response_msg, bin_data, 
     user_link = build_user_link(user_obj)
     gateway_display = html_escape(f"Shopify {price} USD")
     safe_response = html_escape(str(response_msg))
-    dev_link = '<a href="https://t.me/RohitRich">𝑫𝒐𝒓𝒆𝒂𝒎𝒐𝒏</a>'
+    dev_link = '<a href="https://t.me/Prince_Xtremee">🜲 𝚸 𝐑 𐎂 𝚴 𝐂 𝐄 </a>'
     user_display = f"{user_link} ({plan_name})"
     safe_proxy = str(proxy_status_formatted)
     safe_site = html_escape(str(site))

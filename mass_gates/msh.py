@@ -93,6 +93,7 @@ router = Router()
 API_URLS = [
     "https://web-production-8accd.up.railway.app/"
     "https://p01--jope--7rj6gztjzxw7.code.run/"
+    "https://web-production-34053.up.railway.app/shopify"
 ]
 
 # ── PERMANENT FAKE SITE BLACKLIST ──────────────────────────────────────────────
@@ -1926,7 +1927,7 @@ async def run_mass_checker(bot: Bot, session_id, cards, user_obj, plan_name):
     session = MSH_SESSIONS.get(session_id)
     if not session: return
 
-    sem = asyncio.Semaphore(200)
+    sem = asyncio.Semaphore(20)
 
     async def worker(cc_formatted, cc_num):
         if is_session_stopped(session_id):

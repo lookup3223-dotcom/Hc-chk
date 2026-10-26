@@ -94,7 +94,7 @@ from mass_gates.msh import ProxyManager, get_user_proxies
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 HIT_LOG_GROUP_ID = -1004450624623
-EXTRA_CHARGED_GROUP_ID = -1004482288209
+EXTRA_CHARGED_GROUP_ID = -1004482288206
 BUTTON_LOCK_SECONDS = 30
 
 CUSTOM_CHARGED_EMOJI_ID = "5042050649248760772"

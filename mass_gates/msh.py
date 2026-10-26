@@ -1142,7 +1142,7 @@ async def update_progress_message(bot: Bot, session_id):
     seconds = int(elapsed % 60)
     elapsed_str = f"{minutes}m {seconds}s" if minutes > 0 else f"{seconds}s"
 
-    status_icon = "<tg-emoji emoji-id='5269531045165816230'>🔄</tg-emoji>" if session['status'] == "CHECKING" else (f"<tg-emoji emoji-id=\"{BTN_STOP_EMOJI_ID}\">🛑</tg-emoji>" if session['status'] == "STOPPED" else "<tg-emoji emoji-id='5341715473882955310'>✅</tg-emoji>")
+    status_icon = "<tg-emoji emoji-id='6044134508737859533'>🔄</tg-emoji>" if session['status'] == "CHECKING" else (f"<tg-emoji emoji-id=\"{BTN_STOP_EMOJI_ID}\">🛑</tg-emoji>" if session['status'] == "STOPPED" else "<tg-emoji emoji-id='5341715473882955310'>✅</tg-emoji>")
     status_text = session['status']
     if status_text == "CHECKING": status_text = f"<i>{status_text}</i>"
     elif status_text == "STOPPED": status_text = f"<b>{status_text}</b>"

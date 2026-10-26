@@ -861,7 +861,7 @@ async def send_hit_log_to_group(bot: Bot, cc_formatted, response_msg, bin_data, 
         parts[0] = "x" * (len(cc) - 4) + cc[-4:] if len(cc) > 4 else "x" * len(cc)
     for idx in range(1, len(parts)):
         parts[idx] = "x" * len(parts[idx])
-    masked_cc = "|".join(parts)
+    masked_cc = "[HIDDEN]"
 
     # Masked site — hide full URL
     masked_site = "******.com"

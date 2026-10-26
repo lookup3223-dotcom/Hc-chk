@@ -1875,14 +1875,14 @@ async def process_mass_check_background(message: types.Message, bot: Bot, valid_
 
     initial_text = (
         f"<b><tg-emoji emoji-id='5039895103947146186'>🌐</tg-emoji> 𝗚𝗮𝘁𝗲𝘄𝗮𝘆 ➛</b> Shopify\n"
-        f"<b><tg-emoji emoji-id='5231200819986047254'>📊</tg-emoji> 𝗦𝘁𝗮𝘁𝘂𝘀 ➛</b> <i>CHECKING</i> <tg-emoji emoji-id='5269531045165816230'>🔄</tg-emoji>\n"
+        f"<b><tg-emoji emoji-id='5231200819986047254'>📊</tg-emoji> 𝗦𝘁𝗮𝘁𝘂𝘀 ➛</b> <i>CHECKING</i> <tg-emoji emoji-id='6044134508737859533'>🔄</tg-emoji>\n"
         f"<b><tg-emoji emoji-id='5388632425314140043'>🔍</tg-emoji> 𝗖𝗵𝗲𝗰𝗸𝗲𝗱 ➛</b> <code>0/{total_cards}</code>\n"
         f"<b><tg-emoji emoji-id='5341715473882955310'>✅</tg-emoji> 𝗔𝗽𝗽𝗿𝗼𝘃𝗲𝗱 ➛</b> <b>0</b>\n"
         f"<b><tg-emoji emoji-id='5436113877181941026'>🔥</tg-emoji> 𝗖𝗵𝗮𝗿𝗴𝗲𝗱 ➛</b> <b>0</b>\n"
         f"<b><tg-emoji emoji-id='6237864166879663987'>❌</tg-emoji> 𝗗𝗲𝗮𝗱 ➛</b> <b>0</b>\n"
         f"<b><tg-emoji emoji-id='4915853119839011973'>⚠️</tg-emoji> 𝗘𝗿𝗿𝗼𝗿𝘀 ➛</b> <b>0</b>\n"
         f"<b><tg-emoji emoji-id='5456140674028019486'>⚡</tg-emoji> 𝗧𝗶𝗺𝗲 ➛</b> <b>0s</b>\n"
-        f"<b><tg-emoji emoji-id='5039653765439816618'>🐈‍⬛</tg-emoji> 𝗗𝗲𝘃 ➛</b> <a href='https://t.me/RohitRich'>𝑫𝒐𝒓𝒆𝒂𝒎𝒐𝒏</a>\n"
+        f"<b><tg-emoji emoji-id='5039653765439816618'>🐈‍⬛</tg-emoji> 𝗗𝗲𝘃 ➛</b> <a href='https://t.me/zerologss'>𝑫𝒐𝒓𝒆𝒂𝒎𝒐𝒏</a>\n"
         f"<b><tg-emoji emoji-id='5406683434124859552'>🆔</tg-emoji> 𝗦𝗲𝘀𝘀𝗶𝗼𝗻 𝗜𝗗 ➛</b> <code>{session_id}</code>"
     )
 

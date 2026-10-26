@@ -13,7 +13,7 @@ from aiogram.types import (
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # CONFIGURATION
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-ADMIN_ID         = 8987937105
+ADMIN_ID         = 8662263918
 FEEDBACK_CHANNEL = -1004420032759   # channel where approved hits are posted
 
 router = Router()

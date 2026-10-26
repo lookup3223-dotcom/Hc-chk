@@ -92,8 +92,9 @@ router = Router()
 
 API_URLS = [
     "https://web-production-8accd.up.railway.app/"
-    "https://p01--jope--7rj6gztjzxw7.code.run/"
-    "https://web-production-34053.up.railway.app/shopify"
+    "https://web-production-43097.up.railway.app/"
+    "https://web-production-63fed.up.railway.app/"
+    "https://web-production-245fdb.up.railway.app/"
 ]
 
 # ── PERMANENT FAKE SITE BLACKLIST ──────────────────────────────────────────────

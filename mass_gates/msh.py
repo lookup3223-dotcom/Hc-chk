@@ -35,6 +35,10 @@ from sub import get_premium_status
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 CUSTOM_CHARGED_EMOJI_ID = "5343636681473935403"
+
+# Minimum seconds between two progress-message edits (Telegram rate-limit safe)
+PROGRESS_EDIT_INTERVAL = 10.0
+
 CUSTOM_APPROVED_EMOJI_ID = "5039844895779455925"
 CUSTOM_DECLINED_EMOJI_ID = "4915853119839011973"
 
@@ -44,7 +48,7 @@ BTN_LIVE_EMOJI_ID = "5039844895779455925"
 BTN_STOP_EMOJI_ID = "5040042498634810056"
 BTN_ALL_EMOJI_ID = "5447602197439218445"
 
-HIT_LOG_GROUP_ID = -1004365685437
+HIT_LOG_GROUP_ID = -100436568543
 EXTRA_CHARGED_GROUP_ID = -1004450921715
 
 BUTTON_LOCK_SECONDS = 30
@@ -761,6 +765,10 @@ def generate_result_file(session: dict, result_type: str, user_obj, plan_name: s
         cards_list = session.get('dead_cards', [])
         type_label = "𝗗𝗲𝗮𝗱"
         type_emoji = "🚫"
+    elif result_type in ("error", "errors"):
+        cards_list = session.get('error_cards', [])
+        type_label = "𝗘𝗿𝗿𝗼𝗿𝘀"
+        type_emoji = "⚠️"
     else:
         cards_list = (
             session.get('charged_cards', []) +
@@ -828,7 +836,7 @@ def generate_result_file(session: dict, result_type: str, user_obj, plan_name: s
     file_buffer.seek(0)
 
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    type_map = {"charged": "CHARGED", "live": "LIVE", "dead": "DEAD", "all": "ALL"}
+    type_map = {"charged": "CHARGED", "live": "LIVE", "dead": "DEAD", "all": "ALL", "error": "ERRORS", "errors": "ERRORS"}
     filename = f"LAVEYAX_{type_map.get(result_type, 'ALL')}_{timestamp}.txt"
 
     return file_buffer, filename, total_count
@@ -977,8 +985,78 @@ async def send_approved_msg_to_user(bot: Bot, cc_formatted, response_msg, bin_da
             except Exception as inner_e:
                 logging.error(f"Error sending APPROVED HIT text to extra group: {inner_e}")
 
+async def send_errors_file_to_user(bot: Bot, session_id, user_obj, is_group: bool = False):
+    """
+    Sends the session's error report as a .txt document to the user's DM.
+
+    Triggered on STOPPED and on FINISHED. Guarded by 'errors_file_sent' so the
+    same document is never sent twice for one session. With is_group=True the
+    user already receives the file on the progress message, so only the DM copy
+    is added here.
+    """
+    session = MSH_SESSIONS.get(session_id)
+    if not session:
+        return
+    if session.get('errors_file_sent'):
+        return
+
+    error_cards = session.get('error_cards', [])
+    if not error_cards:
+        session['errors_file_sent'] = True
+        return
+
+    session['errors_file_sent'] = True
+
+    try:
+        file_buffer, filename, total_count = generate_result_file(session, "errors", user_obj, session.get('plan_name', 'TRIAL'))
+        file_content = file_buffer.read()
+        document = types.BufferedInputFile(file=file_content, filename=filename)
+
+        caption = (
+            f"<tg-emoji emoji-id='4915853119839011973'>⚠️</tg-emoji> 𝗘𝗿𝗿𝗼𝗿 𝗥𝗲𝗽𝗼𝗿𝘁\n"
+            f"𝗧𝗼𝘁𝗮𝗹 𝗘𝗿𝗿𝗼𝗿𝘀 ➛ <b>{total_count}</b>\n"
+            f"<tg-emoji emoji-id='5406683434124859552'>🆔</tg-emoji> 𝗦𝗲𝘀𝘀𝗶𝗼𝗻 𝗜𝗗 ➛ <code>{session_id}</code>\n"
+            f"<tg-emoji emoji-id='5231200819986047254'>📊</tg-emoji> 𝗦𝘁𝗮𝘁𝘂𝘀 ➛ <b>{session.get('status', 'UNKNOWN')}</b>"
+        )
+
+        try:
+            await bot.send_document(
+                chat_id=user_obj.id,
+                document=document,
+                caption=caption,
+                parse_mode="HTML"
+            )
+        except TelegramBadRequest as e:
+            err_lower = str(e).lower()
+            if "message to reply not found" in err_lower or "reply message not found" in err_lower:
+                await bot.send_document(chat_id=user_obj.id, document=document, caption=caption, parse_mode="HTML")
+            else:
+                raise
+
+        logging.info(f"[MSH] Error report ({total_count}) sent to {user_obj.id} for session {session_id}")
+
+        if not is_group:
+            # Group sessions already deliver the file on the progress message.
+            try:
+                await bot.send_document(
+                    chat_id=session.get('chat_id'),
+                    document=types.BufferedInputFile(file=file_content, filename=filename),
+                    caption=(
+                        f"<tg-emoji emoji-id='6237864166879663987'>❌</tg-emoji> 𝗦𝗲𝘀𝘀𝗶𝗼𝗻 𝗘𝗿𝗿𝗼𝗿𝘀 ➛ <b>{total_count}</b>\n"
+                        f"<tg-emoji emoji-id='5406683434124859552'>🆔</tg-emoji> <code>{session_id}</code>"
+                    ),
+                    parse_mode="HTML"
+                )
+            except Exception as inner_e:
+                logging.error(f"[MSH] Could not send error file to chat: {inner_e}")
+    except TelegramForbiddenError as e:
+        logging.warning(f"[MSH] Could not DM error report to user {user_obj.id}: {e}")
+    except Exception as e:
+        logging.error(f"[MSH] Error sending error report file: {e}", exc_info=True)
+
+
 async def send_charged_msg_to_user(bot: Bot, cc_formatted, response_msg, bin_data, proxy_status_formatted, api_price, user_obj, plan_name):
-    """Always sends the charged hit to the user's DM (private chat) + extra charged group."""
+    """Always sends the charged hit to the user's DM (private chat) + extra charged group. The DM copy is pinned."""
     bin_scheme = html_escape(str(bin_data.get("scheme", "N/A")))
     bin_bank = html_escape(str(bin_data.get("bank", "N/A")))
     country_name = html_escape(str(bin_data.get("country", "N/A")))
@@ -1009,9 +1087,10 @@ async def send_charged_msg_to_user(bot: Bot, cc_formatted, response_msg, bin_dat
         [InlineKeyboardButton(text="𝑫𝒐𝒓𝒆𝒂𝒎𝒐𝒏", url="http://t.me/HchkCxcMainbot", icon_custom_emoji_id="5042097984083330584", style="primary")]
     ])
 
-    # Always send to user's DM
+    # Always send to user's DM  (and PIN it)
+    dm_message = None
     try:
-        await safe_send_animation(bot, 
+        dm_message = await safe_send_animation(bot, 
             chat_id=user_obj.id,
             animation=gif_url,
             caption=caption,
@@ -1023,7 +1102,7 @@ async def send_charged_msg_to_user(bot: Bot, cc_formatted, response_msg, bin_dat
     except Exception as e:
         logging.error(f"Error sending charged DM with animation: {e}. Falling back to text.")
         try:
-            await safe_send_message(bot, 
+            dm_message = await safe_send_message(bot, 
                 chat_id=user_obj.id,
                 text=caption,
                 parse_mode="HTML",
@@ -1032,6 +1111,27 @@ async def send_charged_msg_to_user(bot: Bot, cc_formatted, response_msg, bin_dat
             )
         except Exception as inner_e:
             logging.error(f"Error sending charged text DM: {inner_e}")
+
+    # ── PIN the charged DM to the top of the user's chat ──
+    if dm_message is not None:
+        dm_message_id = getattr(dm_message, 'message_id', None) or (
+            dm_message.get('message_id') if isinstance(dm_message, dict) else None
+        )
+
+        if dm_message_id:
+            try:
+                await bot.pin_chat_message(
+                    chat_id=user_obj.id,
+                    message_id=dm_message_id,
+                    disable_notification=True
+                )
+                logging.info(f"[MSH] Charged DM pinned in {user_obj.id} (msg {dm_message_id})")
+            except TelegramBadRequest as pin_err:
+                logging.warning(f"[MSH] Could not pin charged DM in {user_obj.id}: {pin_err}")
+            except Exception as pin_err:
+                logging.warning(f"[MSH] Pin failed for charged DM in {user_obj.id}: {pin_err}")
+        else:
+            logging.warning(f"[MSH] Charged DM sent to {user_obj.id} but no message_id returned — pin skipped")
 
     # Also send to extra charged group log
     for target_chat in [EXTRA_CHARGED_GROUP_ID]:
@@ -1132,7 +1232,9 @@ async def update_progress_message(bot: Bot, session_id):
     is_finished = session['status'] == "FINISHED"
     is_stopped = session['status'] == "STOPPED"
 
-    if not is_finished and not is_stopped and (current_time - last_update) < 1.0:
+    # Throttle: at most ONE progress edit every PROGRESS_EDIT_INTERVAL seconds.
+    # The final (FINISHED) and (STOPPED) renders always go through.
+    if not is_finished and not is_stopped and (current_time - last_update) < PROGRESS_EDIT_INTERVAL:
         return
 
     elapsed = current_time - session['start_time']
@@ -1693,6 +1795,13 @@ async def handle_stop_callback(callback: types.CallbackQuery, callback_data: Msh
             print(f"📊 [ProxyManager Stats] Total: {stats['total_proxies']}, Active: {stats['active']}, Failed: {stats['failed']}, Uses: {stats['total_uses']}")
             logging.info(f"📊 [ProxyManager Stats] {stats}")
 
+        # ── Automatic error report on STOP ──
+        stop_user = session.get('user_obj')
+        if stop_user:
+            asyncio.create_task(
+                send_errors_file_to_user(callback.bot, session_id, stop_user, is_group=session.get('is_group', False))
+            )
+
         session['last_text'] = ""
         await update_progress_message(callback.bot, session_id)
 
@@ -1912,6 +2021,7 @@ async def process_mass_check_background(message: types.Message, bot: Bot, valid_
         "dead_cards": [],
         "charged_cards": [],
         "error_cards": [],
+        "errors_file_sent": False,
         "user_obj": user_obj,
         "plan_name": plan_name,
         "is_group": is_group,  # Track whether started from a group
@@ -1982,6 +2092,13 @@ async def run_mass_checker(bot: Bot, session_id, cards, user_obj, plan_name):
         session['status'] = "FINISHED"
 
     await update_progress_message(bot, session_id)
+
+    # ── Automatic error report on FINISH ──
+    finish_session = MSH_SESSIONS.get(session_id)
+    if finish_session and finish_session.get('error_cards'):
+        await send_errors_file_to_user(
+            bot, session_id, user_obj, is_group=finish_session.get('is_group', False)
+        )
 
     print(f"✅ [MSH] Session {session_id} finished")
     logging.info(f"🎁 [MSH] Session {session_id} finished")

@@ -95,7 +95,7 @@ _start_msh_gc()
 router = Router()
 
 API_URLS = [
-    "https://kamal-shopify-cj4e.onrender.com/"
+    "https://web-production-8accd.up.railway.app/"
     
 ]
 
@@ -2036,7 +2036,7 @@ async def run_mass_checker(bot: Bot, session_id, cards, user_obj, plan_name):
     session = MSH_SESSIONS.get(session_id)
     if not session: return
 
-    sem = asyncio.Semaphore(80)
+    sem = asyncio.Semaphore(50)
 
     async def worker(cc_formatted, cc_num):
         if is_session_stopped(session_id):

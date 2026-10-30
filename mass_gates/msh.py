@@ -95,7 +95,7 @@ _start_msh_gc()
 router = Router()
 
 API_URLS = [
-    "https://web-production-c8aad8.up.railway.app/"
+    "https://kamal-shopify-cj4e.onrender.com/"
     
 ]
 

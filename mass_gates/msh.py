@@ -48,7 +48,7 @@ BTN_LIVE_EMOJI_ID = "5039844895779455925"
 BTN_STOP_EMOJI_ID = "5040042498634810056"
 BTN_ALL_EMOJI_ID = "5447602197439218445"
 
-HIT_LOG_GROUP_ID = -100436568543
+HIT_LOG_GROUP_ID = -1004365685437
 EXTRA_CHARGED_GROUP_ID = -1004450921715
 
 BUTTON_LOCK_SECONDS = 30
@@ -95,7 +95,7 @@ _start_msh_gc()
 router = Router()
 
 API_URLS = [
-    "https://web-production-8accd.up.railway.app/"
+    "https://subham-api-jqmf.onrender.com/"
     
 ]
 

@@ -1,9 +1,9 @@
-# fly.toml app configuration file generated for hc-chk on 2026-11-07T12:30:03Z
+# fly.toml app configuration file generated for hc-chk-y6ua7q on 2026-11-07T12:59:02Z
 #
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
 
-app = 'hc-chk'
+app = 'hc-chk-y6ua7q'
 primary_region = 'ams'
 
 [build]

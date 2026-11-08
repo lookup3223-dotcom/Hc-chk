@@ -95,7 +95,7 @@ _start_msh_gc()
 router = Router()
 
 API_URLS = [
-    "https://keep-supporting-guys-dazzelerx.up.railway.app/shopii/"
+    "https://subhamapi-7224ad64e6d7.herokuapp.com"
     
 ]
 

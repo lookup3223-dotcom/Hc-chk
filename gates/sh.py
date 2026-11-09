@@ -67,7 +67,7 @@ router = Router()
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 API_URLS = [
-    "http://chirag-x-shopify-production.up.railway.app/shopify"
+    "https://subhamapi-7224ad64e6d7.herokuapp.com"
 ]
 
 SITES_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "mass_gates", "sites.txt")
